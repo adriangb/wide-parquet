@@ -1,39 +1,77 @@
 # wide-parquet
 
-Write Parquet with Many Heterogeneous columns efficiently, with Rust.
+Write Parquet with many heterogeneous columns efficiently, in Rust.
 
 This example shows how to use the Rust [`parquet crate`] to write wide tables
-(1000s of columns) and large strings (1MB each row) with limited memory. 
+(1000s of columns) with large string values (16 KiB per row) using limited
+memory.
 
-The example reports the peak memory buffered by the underlying ArrowWriter. You
-can also run using a `--spill` argument which will write buffered pages to
+The example reports the peak memory buffered by the underlying `ArrowWriter`. You
+can also run it with a `--spill` argument, which writes buffered pages to
 temporary files instead.
 
+For the default configuration (8192 rows, 18 columns) the memory savings are
+almost 100x:
+
+| Configuration (8192 rows) | Heap Memory |
+|---------------------------|-------------|
+| Default                   | 1.25 GiB    |
+| Spilling                  | 13.4 MiB    |
+
+Using a more common row group size of 100,000 rows, the memory savings are even
+more dramatic — more than 500x:
+
+| Configuration (100,000 rows)  | Heap Memory |
+|-------------------------------|-------------|
+| Default                       | 15.65 GiB   |
+| Spilling                      | 30.5 MiB    |
+
+## Example output
+
+You can see this by running `cargo run --release` and `cargo run --release -- --spill`:
+
+```shell
+$ cargo run --release
+Writing 8192 rows × 18 columns (3 int, 5 small-string ~20B, 10 large-string ~16 KiB)
+Page buffering                 : InMemoryPageStore (default, on the heap)
+Rows written                   : 8192 rows
+Peak ArrowWriter::memory_size(): 1283.7 MiB   <- bytes the writer held on the heap
+Total elapsed time             : 1.172 s
+```
+
+```shell
+$ cargo run --release -- --spill
+Writing 8192 rows × 18 columns (3 int, 5 small-string ~20B, 10 large-string ~16 KiB)
+Page buffering                 : TempFilePageStore (spilling to temp files)
+Rows written                   : 8192 rows
+Peak ArrowWriter::memory_size(): 13.4 MiB   <- bytes the writer held on the heap
+Total elapsed time             : 1.336 s
+Spilled to temp file           : 2576 pages (1270.4 MiB)
+```
 
 ## Background
 
 The nature of Parquet is that data pages for a particular column chunk (the rows
-for a column within a row group) must be contiguous, meaning that the row group
-encoding must complete before the final bytes can be written
+for a column within a row group) must be contiguous in the output file, meaning
+that the row group encoding must complete before the final bytes can be written.
 
-By default, the [arrow-rs] Parquet writer, like many other parqet writer
+By default, the [arrow-rs] Parquet writer, like many other Parquet writer
 implementations, buffers the entire (compressed) row group in RAM before writing
-out to storage. While efficient, this can buffer very large amounts of data for
-wide columns or columns with large (e.g. string / image) values.
-
+it out to storage. While efficient, this can buffer very large amounts of data
+for wide schemas or columns with large (e.g. string / image) values.
 
 ## PageStore
 
-To avoid buffering the entire row group in memory, the Parquet writer can be
+To avoid buffering an entire row group in memory, the Parquet writer can be
 configured to use a [`PageStore`] for buffering the encoded pages. This example
 writes encoded pages to temp files before writing the final Parquet file, but a
-`PageStore` could also be used to buffer pages in memory, write to a remote
-store, or dynamic spilling to disk when a memory threshold is exceeded, and
-more.
+`PageStore` could also be used to buffer pages in memory, write them to a remote
+object store, or dynamically spill to disk once a memory threshold is exceeded,
+and more.
 
-Nothing comes for free, of course, and using a PageStore results in writing the
-bytes one extra time -- both to and from the page store, though the bytes
-are efficiently encoded Parquet data pages, not the original input data.
+Nothing comes for free, of course: using a `PageStore` writes the bytes one extra
+time — both to and from the store. Those bytes are efficiently encoded Parquet
+data pages, though, not the original input data.
 
 ## Running
 
@@ -48,31 +86,6 @@ cargo run --release -- --spill
 # Make the schema wider / the skew worse:
 cargo run --release -- --spill --large-string-columns 40
 ```
-
-Flags: `--large-string-columns`, `--small-string-columns`, `--int-columns`,
-`--rows`, `--spill`.
-
-### Example output
-
-```text
-$ cargo run --release
-Writing 64 rows × 18 columns (3 int, 5 small-string ~20B, 10 large-string ~1 MiB)
-Page buffering: InMemoryPageStore (default, on the heap)  (large-column payload ≈ 640.0 MiB)
-
-Done. Wrote 64 rows.
-Peak ArrowWriter::memory_size():    640.3 MiB   <- bytes the writer held on the heap
-...
-
-$ cargo run --release -- --spill
-Page buffering: TempFilePageStore (spilling to temp files)  (large-column payload ≈ 640.0 MiB)
-
-Done. Wrote 64 rows.
-Peak ArrowWriter::memory_size():     10.2 MiB   <- bytes the writer held on the heap
-Spilled 1296 pages (630.0 MiB) to temp files.
-```
-
-i.e. spilling cuts peak writer memory from ~640 MiB (the whole row group buffered
-on the heap) to ~10 MiB (just the in-flight encoder buffers).
 
 ## Dependency pinning
 

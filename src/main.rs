@@ -27,8 +27,7 @@ use parquet::file::properties::WriterProperties;
 #[derive(Parser)]
 #[command(version, about)]
 struct Args {
-    /// Number of large (~1 MiB) string columns — the fat columns that make the
-    /// in-memory page buffer blow up.
+    /// Number of large (~16 KiB) string columns.
     #[arg(long, default_value_t = 10)]
     large_string_columns: usize,
 
@@ -40,33 +39,21 @@ struct Args {
     #[arg(long, default_value_t = 3)]
     int_columns: usize,
 
-    /// Total number of rows, all written into a single row group. At 1 MiB per
-    /// large value the default keeps the baseline row-group buffer near
-    /// `rows × large_string_columns` MiB — raise it to make the skew worse.
-    #[arg(long, default_value_t = 64)]
+    /// Total number of rows, all written into a single row group.
+    #[arg(long, default_value_t = 8192)]
     rows: usize,
 
-    /// Spill completed pages to temp files instead of buffering them on the heap.
+    /// Spill completed pages to temp files instead of buffering them.
     #[arg(long)]
     spill: bool,
 }
 
-/// Length, in bytes, of values in a "large" string column (1 MiB per row).
-const LARGE_AVG_LEN: usize = 1024 * 1024;
+/// Length, in bytes, of values in a "large" string column (16 KiB per row).
+const LARGE_AVG_LEN: usize = 16 * 1024;
 /// Length, in bytes, of values in a "small" string column.
 const SMALL_AVG_LEN: usize = 20;
-/// Rows per input batch fed to the writer. Kept small because at 1 MiB per large
-/// value a single batch already holds `BATCH_SIZE × large_string_columns` MiB.
-const BATCH_SIZE: usize = 8;
-
-// ---------------------------------------------------------------------------
-// The spilling page store.
-//
-// A `PageStore` is intentionally "dumb": it maps an opaque, store-allocated
-// `PageKey` to a blob of bytes and knows nothing about pages, dictionaries, or
-// ordering. The caller keeps the handles and decides what they mean. That is all
-// a backend has to implement to move the page buffer off the heap.
-// ---------------------------------------------------------------------------
+/// Rows per input batch fed to the writer
+const BATCH_SIZE: usize = 4096;
 
 /// Running totals of what was spilled, shared across the per-column stores.
 #[derive(Debug, Default)]
@@ -75,15 +62,16 @@ struct SpillStats {
     bytes: AtomicU64,
 }
 
-/// A spilling [`PageStore`]: one temp file per column chunk. `put` appends the
-/// page blob and records its `(offset, len)`; `take` seeks and reads it back.
-/// The file is unlinked on creation (via [`tempfile::tempfile`]) so the OS
-/// reclaims it when the store is dropped.
+/// A spilling [`PageStore`]: one temp file per column chunk.
+///
+/// `put` appends the bytes to the file and records its `(offset, len)`; `take`
+/// seeks and reads it back. The file is unlinked on creation (via
+/// [`tempfile::tempfile`]) so the OS reclaims it when the store is dropped.
 struct TempFilePageStore {
     file: File,
     /// Logical end of the file — where the next `put` appends.
     end: u64,
-    /// `(offset, len)` for each stored blob, indexed by the `PageKey` we minted.
+    /// `(offset, len)` for each stored blob, indexed by the `PageKey`
     locs: Vec<(u64, usize)>,
     stats: Arc<SpillStats>,
 }
@@ -101,8 +89,7 @@ impl TempFilePageStore {
 
 impl PageStore for TempFilePageStore {
     fn put(&mut self, value: Bytes) -> Result<PageKey> {
-        // Always append at the logical end (a prior `take` may have moved the
-        // OS file cursor).
+        // Always append at the logical end
         self.file.seek(SeekFrom::Start(self.end))?;
         self.file.write_all(&value)?;
         self.stats.pages.fetch_add(1, Ordering::Relaxed);
@@ -162,28 +149,27 @@ fn main() -> Result<()> {
     // Total logical payload across the large columns — the part that dominates.
     let large_payload = args.large_string_columns * LARGE_AVG_LEN * args.rows;
     println!(
-        "Writing {} rows × {} columns ({} int, {} small-string ~{}B, {} large-string ~{:.0} MiB)",
+        "Writing {} rows × {} columns ({} int, {} small-string ~{}B, {} large-string ~{} KiB)",
         args.rows,
         args.int_columns + args.small_string_columns + args.large_string_columns,
         args.int_columns,
         args.small_string_columns,
         SMALL_AVG_LEN,
         args.large_string_columns,
-        mib(LARGE_AVG_LEN),
+        LARGE_AVG_LEN / 1024,
     );
     println!(
-        "Page buffering: {}  (large-column payload ≈ {:.1} MiB)",
+        "{:<31}: {}",
+        "Page buffering",
         if args.spill {
             "TempFilePageStore (spilling to temp files)"
         } else {
             "InMemoryPageStore (default, on the heap)"
         },
-        mib(large_payload),
     );
 
-    // Write to a sink: the produced file bytes are discarded so they never
-    // inflate the heap, and the measured peak then reflects only the writer's
-    // page buffering.
+    // Throw away all output since we're just measuring memory, not the file
+    // size or contents.
     let sink = std::io::sink();
     let mut writer = ArrowWriter::try_new_with_options(sink, schema.clone(), options)?;
 
@@ -194,28 +180,28 @@ fn main() -> Result<()> {
         let batch = make_batch(&schema, &args, written as u64, n);
         writer.write(&batch)?;
         written += n;
-        // `memory_size()` reports the bytes the writer holds resident on the
-        // heap: with the in-memory store this climbs toward the whole row group;
-        // with the spilling store it stays flat.
+        // `memory_size()` reports the bytes the writer holds on the heap
         peak_memory = peak_memory.max(writer.memory_size());
     }
     peak_memory = peak_memory.max(writer.memory_size());
     writer.close()?;
     let elapsed = start.elapsed();
 
-    println!();
-    println!("Done. Wrote {written} rows.");
+    println!("{:<31}: {written} rows", "Rows written");
     println!(
-        "Peak ArrowWriter::memory_size(): {:>8.1} MiB   <- bytes the writer held on the heap",
+        "{:<31}: {:.1} MiB   <- bytes the writer held on the heap",
+        "Peak ArrowWriter::memory_size()",
         mib(peak_memory),
     );
     println!(
-        "Total elapsed time             : {:>8.3} s",
+        "{:<31}: {:.3} s",
+        "Total elapsed time",
         elapsed.as_secs_f64(),
     );
     if args.spill {
         println!(
-            "Spilled {} pages ({:.1} MiB) to temp files.",
+            "{:<31}: {} pages ({:.1} MiB)",
+            "Spilled to temp file",
             stats.pages.load(Ordering::Relaxed),
             mib(stats.bytes.load(Ordering::Relaxed) as usize),
         );
