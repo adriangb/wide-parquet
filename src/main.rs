@@ -2,36 +2,7 @@
 //! keeps completed Parquet pages in temp files instead of buffering them on the
 //! heap.
 //!
-//! # Why
-//!
-//! Parquet requires every column chunk to be contiguous in the file, but Arrow
-//! record batches arrive with all columns interleaved. So while a row group is
-//! being written, [`ArrowWriter`] must buffer every column's completed pages
-//! until the row group is flushed — peak write memory therefore grows with the
-//! row group size. That is painful for wide schemas with large, skewed columns
-//! (a few `id` columns next to a pile of fat string columns).
-//!
-//! A [`PageStore`] lets that page buffer live somewhere other than the heap.
-//! This example plugs in a [`TempFilePageStore`] (one temp file per column
-//! chunk) and reports the writer's peak heap memory, so you can compare the
-//! default in-memory buffering against spilling.
-//!
-//! # Running
-//!
-//! ```sh
-//! # Baseline: default in-memory page buffering. Peak writer memory grows with
-//! # the row group.
-//! cargo run --release
-//!
-//! # Spill completed pages to temp files: peak writer memory stays bounded.
-//! cargo run --release -- --spill
-//!
-//! # Make the schema wider / the skew worse:
-//! cargo run --release -- --spill --large-string-columns 40
-//! ```
-//!
-//! [`ArrowWriter`]: parquet::arrow::ArrowWriter
-//! [`PageStore`]: parquet::arrow::arrow_writer::PageStore
+//! See [README.md] for more details
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};

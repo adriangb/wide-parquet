@@ -1,24 +1,42 @@
 # wide-parquet
 
-Write Parquet with many heterogeneous columns efficiently, with Rust.
+Write Parquet with Many Heterogeneous columns efficiently, with Rust.
 
-A small example of the Parquet [`PageStore`] API: a **spilling** page store that
-keeps completed Parquet pages in temp files instead of buffering them on the
-heap, so peak write memory stays bounded even for wide, skewed schemas.
+
+This example shows how to use the Rust [`parquet crate`] to write wide tables
+(1000s of columns) and large strings (1MB each row) with limited memory. 
+
+The example reports the peak memory buffered by the underlying ArrowWriter. You
+can also run using a `--spill` argument which will write buffered pages to
+temporary files instead.
+
+
 
 ## Background
 
-Parquet requires every column chunk to be contiguous in the file, but Arrow
-record batches arrive with all columns interleaved. So while a row group is
+The nature of Parquet is that data pages for a particular column chunk (the rows
+for a column within a row group) must be contiguous, meaning that the row group
+encoding must complete before the final bytes can be written
+
+By default, the [arrow-rs] Parquet writer, like many other parqet writer
+implementations, buffers the entire (compressed) row group in RAM before writing
+out to storage. While efficient, this can buffer very large amounts of data for
+wide columns or columns with large (e.g. string / image) values.
+
+
+Nothing comes for free, of course, and using a PageStore results in writing the data an extra time -- both to and from the page store.
+
+So while a row group is
 being written, the `ArrowWriter` must buffer every column's completed pages
 until the row group is flushed — peak write memory therefore grows with the row
 group size. That hurts most on **wide, skewed** schemas (a few `id` columns next
 to a pile of fat string columns).
 
-A `PageStore` lets that page buffer live somewhere other than the heap. This
-example implements a `TempFilePageStore` (one temp file per column chunk) and
-reports the writer's peak heap memory so you can compare the default in-memory
-buffering against spilling.
+## PageStore
+
+A [`PageStore`] lets that page buffer live somewhere other than the heap. This
+example uses one temp file per column chunk reports the writer's peak heap
+memory so you can compare the default in-memory buffering against spilling.
 
 ## Running
 
