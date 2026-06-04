@@ -1,0 +1,19 @@
+[package]
+name = "wide-parquet"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Write Parquet with many heterogeneous columns efficiently, using a spilling PageStore"
+repository = "https://github.com/alamb/wide-parquet"
+
+[dependencies]
+# The PageStore API is unreleased, so pin parquet (and the matching arrow crates)
+# to the apache/arrow-rs commit that merged it (#10020). parquet references the
+# arrow crates by path within the repo, so pinning both to the same rev keeps
+# them on one consistent source.
+arrow = { git = "https://github.com/apache/arrow-rs", rev = "8042ea288e084107b602f9e25a850314942567b6", default-features = false }
+parquet = { git = "https://github.com/apache/arrow-rs", rev = "8042ea288e084107b602f9e25a850314942567b6", default-features = false, features = ["arrow"] }
+
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
